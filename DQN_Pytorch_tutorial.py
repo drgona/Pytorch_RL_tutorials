@@ -108,8 +108,8 @@ class DQN(nn.Module):
             return (size - (kernel_size - 1) - 1) // stride  + 1
         convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
         convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
-        linear_input_size = convw * convh * 32
-        self.head = nn.Linear(linear_input_size, outputs)
+        linear_input_size = convw * convh * 32    # width*height*number of filters
+        self.head = nn.Linear(linear_input_size, outputs) # fully connected layer
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
