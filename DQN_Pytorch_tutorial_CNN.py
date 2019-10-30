@@ -92,31 +92,81 @@ DQN model
 #that takes in the difference between the current and previous screen patches    
 class DQN(nn.Module):
 
-    def __init__(self, states, outputs, layers):
+    def __init__(self, h, w, outputs):
         super(DQN, self).__init__()
         # set of layers
-        self.bn = nn.BatchNorm1d(states) # normalization     
-        n_in =  states # number of inputs
-        layerlist = [] #storing the layers
-        for i in layers:
-            layerlist.append(nn.Linear(n_in,i)) 
-            layerlist.append(nn.ReLU(inplace=True))
-            layerlist.append(nn.BatchNorm1d(i))
-            n_in = i
-        #layerlist.append(nn.Linear(layers[-1],outputs)) #final layer        
-         # assign layers to atributes
-        self.layers = nn.Sequential(*layerlist)
-        self.head = nn.Linear(layers[-1], outputs) # fully connected layer       
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=5, stride=2)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
+        self.bn3 = nn.BatchNorm2d(32)
+
+        # Number of Linear input connections depends on output of conv2d layers
+        # and therefore the input image size, so compute it.
+        def conv2d_size_out(size, kernel_size = 5, stride = 2):
+            return (size - (kernel_size - 1) - 1) // stride  + 1
+        convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
+        convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
+        linear_input_size = convw * convh * 32    # width*height*number of filters
+        self.head = nn.Linear(linear_input_size, outputs) # fully connected layer
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
-    def forward(self, x):       
-        x = self.bn(x)
-        x = self.layers(x)            # apply layers
-        return self.head(x)  
-        #  return self.head(x.view(x.size(0), -1))  
-            
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        return self.head(x.view(x.size(0), -1))    
+    
+    
+"""
+Input extraction from image
+"""   
+   
+# torch vision transformation 
+resize = T.Compose([T.ToPILImage(),
+                    T.Resize(40, interpolation=Image.CUBIC),
+                    T.ToTensor()])
 
+def get_cart_location(screen_width):
+    world_width = env.x_threshold * 2
+    scale = screen_width / world_width
+    return int(env.state[0] * scale + screen_width / 2.0)  # MIDDLE OF CART
+
+def get_screen():
+    # Returned screen requested by gym is 400x600x3, but is sometimes larger
+    # such as 800x1200x3. Transpose it into torch order (CHW).
+    screen = env.render(mode='rgb_array').transpose((2, 0, 1))
+    # Cart is in the lower half, so strip off the top and bottom of the screen
+    _, screen_height, screen_width = screen.shape
+    screen = screen[:, int(screen_height*0.4):int(screen_height * 0.8)]
+    view_width = int(screen_width * 0.6)
+    cart_location = get_cart_location(screen_width)
+    if cart_location < view_width // 2:
+        slice_range = slice(view_width)
+    elif cart_location > (screen_width - view_width // 2):
+        slice_range = slice(-view_width, None)
+    else:
+        slice_range = slice(cart_location - view_width // 2,
+                            cart_location + view_width // 2)
+    # Strip off the edges, so that we have a square image centered on a cart
+    screen = screen[:, :, slice_range]
+    # Convert to float, rescale, convert to torch tensor
+    # (this doesn't require a copy)
+    screen = np.ascontiguousarray(screen, dtype=np.float32) / 255
+    screen = torch.from_numpy(screen)
+    # Resize, and add a batch dimension (BCHW)
+    return resize(screen).unsqueeze(0).to(device)
+
+
+env.reset()
+plt.figure()
+plt.imshow(get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
+           interpolation='none')
+plt.title('Example extracted screen')
+plt.show()
+    
     
     
 """
@@ -131,23 +181,20 @@ EPS_END = 0.05
 EPS_DECAY = 200
 TARGET_UPDATE = 10
 
+# Get screen size so that we can initialize layers correctly based on shape
+# returned from AI gym. Typical dimensions at this point are close to 3x40x90
+# which is the result of a clamped and down-scaled render buffer in get_screen()
+init_screen = get_screen()
+_, _, screen_height, screen_width = init_screen.shape
 
-# Get number of actions and observations from gym action space
+# Get number of actions from gym action space
 n_actions = env.action_space.n
-n_states = env.observation_space.shape[0]
-layers = [20, 10]
 
 # instantiates our model and its optimizer
-policy_net = DQN(n_states, n_actions, layers).to(device)   # trained network
-policy_net = policy_net.float()
-target_net = DQN(n_states, n_actions, layers).to(device)   # target net is mostly fixed, updated by policy net every so often
-target_net = target_net.float()
+policy_net = DQN(screen_height, screen_width, n_actions).to(device)   # trained network
+target_net = DQN(screen_height, screen_width, n_actions).to(device)   # target net is mostly fixed, updated by policy net every so often
 target_net.load_state_dict(policy_net.state_dict())
 target_net.eval()
-
-
-for parameter in policy_net.parameters():
-    print(parameter.size())
 
 optimizer = optim.RMSprop(policy_net.parameters())
 memory = ReplayMemory(10000)
@@ -162,7 +209,6 @@ def select_action(state):
         math.exp(-1. * steps_done / EPS_DECAY)
     steps_done += 1
     if sample > eps_threshold:
-        policy_net.eval()
         with torch.no_grad():
             # t.max(1) will return largest column value of each row.
             # second column on max result is index of where max element was
@@ -220,7 +266,6 @@ def optimize_model():
     # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
     # columns of actions taken. These are the actions which would've been taken
     # for each batch state according to policy_net
-    policy_net.eval()
     state_action_values = policy_net(state_batch).gather(1, action_batch)
 
     # Compute V(s_{t+1}) for all next states.
@@ -228,7 +273,6 @@ def optimize_model():
     # on the "older" target_net; selecting their best reward with max(1)[0].
     # This is merged based on the mask, such that we'll have either the expected
     # state value or 0 in case the state was final.
-    target_net.eval()
     next_state_values = torch.zeros(BATCH_SIZE, device=device)
     next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0].detach()
     # Compute the expected Q values
@@ -238,7 +282,6 @@ def optimize_model():
     loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
 
     # Optimize the model
-    policy_net.train()
     optimizer.zero_grad()
     loss.backward()
     for param in policy_net.parameters():
@@ -247,31 +290,32 @@ def optimize_model():
 
 
 # main training loop
-num_episodes = 500
+num_episodes = 50
 for i_episode in range(num_episodes):
     # Initialize the environment and state
-    state = env.reset()
-    state = torch.tensor(state)
-    state = state.float().unsqueeze(0)
-    
-    screen = env.render(mode='rgb_array')
-
-    for t in count(): # COUNTS episodes t before termination
+    env.reset()
+    last_screen = get_screen()
+    current_screen = get_screen()
+    state = current_screen - last_screen
+    for t in count():
         # Select and perform an action
         action = select_action(state)
-        next_state, reward, done, _ = env.step(action.item())
+        _, reward, done, _ = env.step(action.item())
         reward = torch.tensor([reward], device=device)
 
-        next_state = torch.tensor(next_state)
-        next_state = next_state.float().unsqueeze(0)
+        # Observe new state
+        last_screen = current_screen
+        current_screen = get_screen()
+        if not done:
+            next_state = current_screen - last_screen
+        else:
+            next_state = None
 
         # Store the transition in memory
         memory.push(state, action, next_state, reward)
 
         # Move to the next state
         state = next_state
-        
-        screen = env.render(mode='rgb_array')
 
         # Perform one step of the optimization (on the target network)
         optimize_model()
