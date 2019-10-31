@@ -135,7 +135,7 @@ TARGET_UPDATE = 10
 # Get number of actions and observations from gym action space
 n_actions = env.action_space.n
 n_states = env.observation_space.shape[0]
-layers = [20, 10]
+layers = [10, 10]
 
 # instantiates our model and its optimizer
 policy_net = DQN(n_states, n_actions, layers).to(device)   # trained network
