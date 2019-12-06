@@ -135,7 +135,7 @@ TARGET_UPDATE = 10
 # Get number of actions and observations from gym action space
 n_actions = env.action_space.n
 n_states = env.observation_space.shape[0]
-layers = [10, 10]
+layers = [50, 30]
 
 # instantiates our model and its optimizer
 policy_net = DQN(n_states, n_actions, layers).to(device)   # trained network
@@ -254,7 +254,7 @@ for i_episode in range(num_episodes):
     state = torch.tensor(state)
     state = state.float().unsqueeze(0)
     
-    screen = env.render(mode='rgb_array')
+    #screen = env.render(mode='rgb_array')
 
     for t in count(): # COUNTS episodes t before termination
         # Select and perform an action
@@ -271,7 +271,7 @@ for i_episode in range(num_episodes):
         # Move to the next state
         state = next_state
         
-        screen = env.render(mode='rgb_array')
+        #screen = env.render(mode='rgb_array')
 
         # Perform one step of the optimization (on the target network)
         optimize_model()
